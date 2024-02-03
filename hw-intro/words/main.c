@@ -82,13 +82,53 @@ int num_words(FILE* infile) {
  * 1 in the event of any errors (e.g. wclist or infile is NULL)
  * and 0 otherwise.
  */
-int count_words(WordCount** wclist, FILE* infile) { return 0; }
+int count_words(WordCount** wclist, FILE* infile) {
+  if (!wclist || !infile) {
+    return 1;
+  }
+  char word[MAX_WORD_LEN];
+  memset(word, 0, MAX_WORD_LEN);
+  int c = EOF;
+  int num_char_per_word = 0;
+  while ((c = fgetc(infile)) != EOF) {
+    if (isalpha(c)) {
+      word[num_char_per_word] = tolower(c);
+      num_char_per_word++;
+    } else if (num_char_per_word > 0) {
+      if (num_char_per_word > MAX_WORD_LEN) {
+        return 1;
+      }
+      word[num_char_per_word] = '\0';
+      int code = add_word(wclist, word);
+      if (code) {
+        return 1;
+      }
+      memset(word, 0, MAX_WORD_LEN);
+      num_char_per_word = 0;
+    } else {
+      num_char_per_word = 0;
+    }
+  }
+  return 0;
+}
 
 /*
  * Comparator to sort list by frequency.
  * Useful function: strcmp().
  */
-static bool wordcount_less(const WordCount* wc1, const WordCount* wc2) { return 0; }
+static bool wordcount_less(const WordCount* wc1, const WordCount* wc2) {
+  if (!wc1) {
+    return false;
+  }
+  if (!wc2) {
+    return true;
+  }
+  if (wc1->count == wc2->count) {
+    return strcmp(wc1->word, wc2->word) < 0;
+  } else {
+    return wc1->count < wc2->count;
+  }
+}
 
 // In trying times, displays a helpful message.
 static int display_help(void) {
@@ -162,6 +202,12 @@ int main(int argc, char* argv[]) {
       }
       total_words += num_words(infile);
       fclose(infile);
+      infile = fopen(argv[i], "r");
+      if (infile == NULL) {
+        fprintf(stderr, "Specified file %s does not exist.\n", argv[i]);
+        return 1;
+      }
+      count_words(&word_counts, infile);
     }
   }
 
