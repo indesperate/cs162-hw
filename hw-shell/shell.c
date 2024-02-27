@@ -120,25 +120,47 @@ void init_shell() {
 }
 
 void exec_program(struct tokens* tokens) {
-  int args_length = tokens_get_length(tokens);
-  if (args_length < 1) {
+  int num_tokens = tokens_get_length(tokens);
+  if (num_tokens < 1) {
     return;
   }
   pid_t id = fork();
   /* new process */
   if (id == 0) {
-    char* args[args_length + 1];
-    for (int i = 0; i < args_length; i++)
+    // the num of arguments
+    int num_args = num_tokens;
+    // one more location for null terminated
+    char* args[num_tokens + 1];
+    for (int i = 0; i < num_tokens; i++) {
       args[i] = tokens_get_token(tokens, i);
-    args[args_length] = NULL;
+      if (i == num_tokens - 2) {
+        if (args[i][0] == '<') {
+          // redirection
+          freopen(tokens_get_token(tokens, num_tokens - 1), "r", stdin);
+          // filter the redirection tokens
+          num_args = num_tokens - 2;
+          break;
+        }
+        if (args[i][0] == '>') {
+          freopen(tokens_get_token(tokens, num_tokens - 1), "w", stdout);
+          num_args = num_tokens - 2;
+          break;
+        }
+      }
+    }
+    // null terminated
+    args[num_args] = NULL;
     char* program_name = tokens_get_token(tokens, 0);
     if (program_name[0] != '/') {
+      // envrionemnt varibale is not modefiable
       char* path = strndup(getenv("PATH"), MAX_PATH_LENGTH);
       char* path_token;
       char program_full_name[MAX_PATH_LENGTH];
       char* save_ptr;
+      // split the string
       path_token = strtok_r(path, ":", &save_ptr);
       while (path_token) {
+        // complete the full path string
         strncpy(program_full_name, path_token, MAX_PATH_LENGTH);
         strncat(program_full_name, "/", 2);
         strncat(program_full_name, program_name, MAX_NAME_LENGTH);
