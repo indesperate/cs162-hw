@@ -16,6 +16,10 @@
 /* Convenience macro to silence compiler warnings about unused function parameters. */
 #define unused __attribute__((unused))
 
+/* max path length */
+#define MAX_PATH_LENGTH 4096
+#define MAX_NAME_LENGTH 256
+
 /* Whether the shell is connected to an actual terminal or not. */
 bool shell_is_interactive;
 
@@ -30,6 +34,8 @@ pid_t shell_pgid;
 
 int cmd_exit(struct tokens* tokens);
 int cmd_help(struct tokens* tokens);
+int cmd_pwd(struct tokens* tokens);
+int cmd_cd(struct tokens* tokens);
 
 /* Built-in command functions take token array (see parse.h) and return int */
 typedef int cmd_fun_t(struct tokens* tokens);
@@ -44,6 +50,8 @@ typedef struct fun_desc {
 fun_desc_t cmd_table[] = {
     {cmd_help, "?", "show this help menu"},
     {cmd_exit, "exit", "exit the command shell"},
+    {cmd_pwd, "pwd", "print the current working directory"},
+    {cmd_cd, "cd", "change the current direcotry to another directory"},
 };
 
 /* Prints a helpful description for the given command */
@@ -55,6 +63,27 @@ int cmd_help(unused struct tokens* tokens) {
 
 /* Exits this shell */
 int cmd_exit(unused struct tokens* tokens) { exit(0); }
+
+/* print directory */
+int cmd_pwd(unused struct tokens* tokens) {
+  char buf[MAX_PATH_LENGTH];
+  getcwd(buf, MAX_PATH_LENGTH);
+  if (buf == NULL) {
+    printf("Can't print current directory");
+    return 0;
+  }
+  printf("%s\n", buf);
+  return 1;
+}
+
+int cmd_cd(struct tokens* tokens) {
+  char* directory = tokens_get_token(tokens, 1);
+  if (chdir(directory) != 0) {
+    printf("Change direcotry failed\n");
+    return 0;
+  };
+  return 1;
+}
 
 /* Looks up the built-in command, if it exists. */
 int lookup(char cmd[]) {
@@ -90,6 +119,44 @@ void init_shell() {
   }
 }
 
+void exec_program(struct tokens* tokens) {
+  int args_length = tokens_get_length(tokens);
+  if (args_length < 1) {
+    return;
+  }
+  pid_t id = fork();
+  /* new process */
+  if (id == 0) {
+    char* args[args_length + 1];
+    for (int i = 0; i < args_length; i++)
+      args[i] = tokens_get_token(tokens, i);
+    args[args_length] = NULL;
+    char* program_name = tokens_get_token(tokens, 0);
+    if (program_name[0] != '/') {
+      char* path = strndup(getenv("PATH"), MAX_PATH_LENGTH);
+      char* path_token;
+      char program_full_name[MAX_PATH_LENGTH];
+      char* save_ptr;
+      path_token = strtok_r(path, ":", &save_ptr);
+      while (path_token) {
+        strncpy(program_full_name, path_token, MAX_PATH_LENGTH);
+        strncat(program_full_name, "/", 2);
+        strncat(program_full_name, program_name, MAX_NAME_LENGTH);
+        execv(program_full_name, args);
+        path_token = strtok_r(NULL, ":", &save_ptr);
+      }
+    } else {
+      execv(program_name, args);
+    }
+    printf("Program %s is not in path\n", program_name);
+    exit(-1);
+  }
+  /* main process */
+  else {
+    waitpid(id, NULL, 0);
+  }
+}
+
 int main(unused int argc, unused char* argv[]) {
   init_shell();
 
@@ -110,8 +177,7 @@ int main(unused int argc, unused char* argv[]) {
     if (fundex >= 0) {
       cmd_table[fundex].fun(tokens);
     } else {
-      /* REPLACE this to run commands as programs. */
-      fprintf(stdout, "This shell doesn't know how to run programs.\n");
+      exec_program(tokens);
     }
 
     if (shell_is_interactive)
