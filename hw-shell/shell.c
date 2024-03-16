@@ -19,6 +19,7 @@
 /* max path length */
 #define MAX_PATH_LENGTH 4096
 #define MAX_NAME_LENGTH 256
+#define MAX_BACK_PROCESS 64
 
 /* Whether the shell is connected to an actual terminal or not. */
 bool shell_is_interactive;
@@ -36,6 +37,7 @@ int cmd_exit(struct tokens* tokens);
 int cmd_help(struct tokens* tokens);
 int cmd_pwd(struct tokens* tokens);
 int cmd_cd(struct tokens* tokens);
+int cmd_wait(struct tokens* tokens);
 
 /* Built-in command functions take token array (see parse.h) and return int */
 typedef int cmd_fun_t(struct tokens* tokens);
@@ -52,14 +54,18 @@ fun_desc_t cmd_table[] = {
     {cmd_exit, "exit", "exit the command shell"},
     {cmd_pwd, "pwd", "print the current working directory"},
     {cmd_cd, "cd", "change the current direcotry to another directory"},
+    {cmd_wait, "wait", "wait for the processes to end"},
 };
+
+pid_t wait_process[MAX_BACK_PROCESS];
+int wait_num = 0;
 
 typedef struct fd_pair {
   int fd[2];
 } fd_pair;
 
 /* create pipes to n processes */
-int create_pipe_process(int n_pipes) {
+int create_pipe_process(pid_t pids[], int n_pipes, bool is_background) {
   int n_processes = n_pipes + 1;
   fd_pair fd_pair_vec[n_pipes];
   /* create n pipes */
@@ -80,12 +86,16 @@ int create_pipe_process(int n_pipes) {
         printf("set process group id failed\n");
         exit(-1);
       }
-      if (tcsetpgrp(0, getpgrp()) == -1) {
-        printf("set foreground terminal group id failed\n");
-      };
+      if (!is_background) {
+        if (tcsetpgrp(0, getpgrp()) == -1) {
+          printf("set foreground terminal group id failed\n");
+        };
+      }
       signal(SIGTTOU, SIG_DFL);
       index = i;
       break;
+    } else {
+      pids[i] = id;
     }
   }
   /* duplicate the pipes to stdin and stdout, only duplicate in child process */
@@ -137,6 +147,14 @@ int cmd_cd(struct tokens* tokens) {
   return 1;
 }
 
+int cmd_wait(struct tokens* tokens) {
+  for (int i = 0; i < wait_num; i++) {
+    waitpid(wait_process[i], NULL, 0);
+  }
+  wait_num = 0;
+  return 1;
+};
+
 /* Looks up the built-in command, if it exists. */
 int lookup(char cmd[]) {
   for (unsigned int i = 0; i < sizeof(cmd_table) / sizeof(fun_desc_t); i++)
@@ -171,9 +189,16 @@ void init_shell() {
   }
 }
 
-void get_program_args(struct tokens* tokens, int program_index, char* args[]) {
+bool check_if_background(struct tokens* tokens) {
+  return tokens_get_token(tokens, tokens_get_length(tokens) - 1)[0] == '&';
+}
+
+void get_program_args(struct tokens* tokens, int program_index, char* args[], bool is_background) {
   int args_index = 0;
   int num_tokens = tokens_get_length(tokens);
+  if (is_background) {
+    num_tokens--;
+  }
   for (int i = 0; i < num_tokens; i++) {
     if (program_index > 0) {
       if (tokens_get_token(tokens, i)[0] == '|') {
@@ -244,6 +269,7 @@ void handle_redirect_symbol(char* args[]) {
 }
 
 void exec_program(struct tokens* tokens) {
+  bool is_background = check_if_background(tokens);
   int num_tokens = tokens_get_length(tokens);
   if (num_tokens < 1) {
     return;
@@ -255,21 +281,30 @@ void exec_program(struct tokens* tokens) {
       num_pipes++;
     }
   }
-  int program_index = create_pipe_process(num_pipes);
+  int num_process = num_pipes + 1;
+  pid_t pids[num_pipes + 1];
+  int program_index = create_pipe_process(pids, num_pipes, is_background);
   /* new process */
   if (program_index >= 0) {
     /* one more location for null terminated */
     char* args[num_tokens + 1];
     /* handle program paramters */
-    get_program_args(tokens, program_index, args);
+    get_program_args(tokens, program_index, args, is_background);
     handle_redirect_symbol(args);
     exec_program_in_path(args);
   }
   /* main process */
   else {
     // wait all child processes
-    for (int i = 0; i < num_pipes + 1; i++) {
-      wait(NULL);
+    if (is_background) {
+      for (int i = 0; i < num_process; i++) {
+        wait_process[wait_num] = pids[i];
+        wait_num++;
+      }
+    } else {
+      for (int i = 0; i < num_process; i++) {
+        waitpid(pids[i], NULL, 0);
+      }
     }
     if (tcsetpgrp(0, getpgrp()) == -1) {
       printf("set foreground terminal group id failed\n");
