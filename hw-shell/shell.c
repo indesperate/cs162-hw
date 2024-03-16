@@ -71,9 +71,19 @@ int create_pipe_process(int n_pipes) {
   }
   /* fork n processes and get index */
   int index = -1;
+  /* tcsetpgrp will stop by SIGTTOU, so it must ignore this signal */
+  signal(SIGTTOU, SIG_IGN);
   for (int i = 0; i < n_processes; i++) {
     pid_t id = fork();
     if (id == 0) {
+      if (setpgrp() == -1) {
+        printf("set process group id failed\n");
+        exit(-1);
+      }
+      if (tcsetpgrp(0, getpgrp()) == -1) {
+        printf("set foreground terminal group id failed\n");
+      };
+      signal(SIGTTOU, SIG_DFL);
       index = i;
       break;
     }
@@ -261,6 +271,9 @@ void exec_program(struct tokens* tokens) {
     for (int i = 0; i < num_pipes + 1; i++) {
       wait(NULL);
     }
+    if (tcsetpgrp(0, getpgrp()) == -1) {
+      printf("set foreground terminal group id failed\n");
+    };
   }
 }
 
