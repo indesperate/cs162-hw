@@ -54,6 +54,49 @@ fun_desc_t cmd_table[] = {
     {cmd_cd, "cd", "change the current direcotry to another directory"},
 };
 
+typedef struct fd_pair {
+  int fd[2];
+} fd_pair;
+
+/* create pipes to n processes */
+int create_pipe_process(int n_pipes) {
+  int n_processes = n_pipes + 1;
+  fd_pair fd_pair_vec[n_pipes];
+  /* create n pipes */
+  for (int i = 0; i < n_pipes; i++) {
+    if (pipe(fd_pair_vec[i].fd)) {
+      printf("Create pipe filed\n");
+      exit(-1);
+    };
+  }
+  /* fork n processes and get index */
+  int index = -1;
+  for (int i = 0; i < n_processes; i++) {
+    pid_t id = fork();
+    if (id == 0) {
+      index = i;
+      break;
+    }
+  }
+  /* duplicate the pipes to stdin and stdout, only duplicate in child process */
+  if (index >= 0) {
+    if (index > 0) {
+      /* fd[0] for read, fisrt process read from stdin */
+      dup2(fd_pair_vec[index - 1].fd[0], STDIN_FILENO);
+    }
+    if (index < n_pipes) {
+      /* fd[1] for write, last process write to stdout */
+      dup2(fd_pair_vec[index].fd[1], STDOUT_FILENO);
+    }
+  }
+  /* close all pipes, left the duplicated pipes above */
+  for (int i = 0; i < n_pipes; i++) {
+    close(fd_pair_vec[i].fd[0]);
+    close(fd_pair_vec[i].fd[1]);
+  }
+  return index;
+}
+
 /* Prints a helpful description for the given command */
 int cmd_help(unused struct tokens* tokens) {
   for (unsigned int i = 0; i < sizeof(cmd_table) / sizeof(fun_desc_t); i++)
@@ -67,8 +110,7 @@ int cmd_exit(unused struct tokens* tokens) { exit(0); }
 /* print directory */
 int cmd_pwd(unused struct tokens* tokens) {
   char buf[MAX_PATH_LENGTH];
-  getcwd(buf, MAX_PATH_LENGTH);
-  if (buf == NULL) {
+  if (getcwd(buf, MAX_PATH_LENGTH) == NULL) {
     printf("Can't print current directory");
     return 0;
   }
@@ -119,63 +161,106 @@ void init_shell() {
   }
 }
 
+void get_program_args(struct tokens* tokens, int program_index, char* args[]) {
+  int args_index = 0;
+  int num_tokens = tokens_get_length(tokens);
+  for (int i = 0; i < num_tokens; i++) {
+    if (program_index > 0) {
+      if (tokens_get_token(tokens, i)[0] == '|') {
+        program_index--;
+      }
+      continue;
+    } else {
+      if (tokens_get_token(tokens, i)[0] == '|') {
+        break;
+      }
+    }
+    args[args_index] = tokens_get_token(tokens, i);
+    args_index++;
+  }
+  // null terminated
+  args[args_index] = NULL;
+}
+
+void exec_program_in_path(char* args[]) {
+  char* program_name = args[0];
+  if (program_name[0] != '/') {
+    // envrionemnt varibale is not modefiable
+    char* path = strndup(getenv("PATH"), MAX_PATH_LENGTH);
+    char* path_token;
+    char program_full_name[MAX_PATH_LENGTH];
+    char* save_ptr;
+    // split the string
+    path_token = strtok_r(path, ":", &save_ptr);
+    while (path_token) {
+      // complete the full path string
+      strncpy(program_full_name, path_token, MAX_PATH_LENGTH);
+      strncat(program_full_name, "/", 2);
+      strncat(program_full_name, program_name, MAX_NAME_LENGTH);
+      execv(program_full_name, args);
+      path_token = strtok_r(NULL, ":", &save_ptr);
+    }
+  } else {
+    execv(program_name, args);
+  }
+  printf("Program %s is not in path\n", program_name);
+  exit(-1);
+}
+
+void handle_redirect_symbol(char* args[]) {
+  int i = 0;
+  while (args[i] != NULL) {
+    // redirection
+    if (args[i][0] == '<') {
+      if (args[i + 1] == NULL) {
+        printf("Invalid redirect file name\n");
+        exit(-1);
+      }
+      freopen(args[i + 1], "r", stdin);
+      args[i] = NULL;
+      break;
+    }
+    if (args[i][0] == '>') {
+      if (args[i + 1] == NULL) {
+        printf("Invalid redirect file name\n");
+        exit(-1);
+      }
+      freopen(args[i + 1], "w", stdout);
+      args[i] = NULL;
+      break;
+    }
+    i++;
+  }
+}
+
 void exec_program(struct tokens* tokens) {
   int num_tokens = tokens_get_length(tokens);
   if (num_tokens < 1) {
     return;
   }
-  pid_t id = fork();
+  int num_pipes = 0;
+  for (int i = 0; i < num_tokens; i++) {
+    char* token = tokens_get_token(tokens, i);
+    if (token[0] == '|') {
+      num_pipes++;
+    }
+  }
+  int program_index = create_pipe_process(num_pipes);
   /* new process */
-  if (id == 0) {
-    // the num of arguments
-    int num_args = num_tokens;
-    // one more location for null terminated
+  if (program_index >= 0) {
+    /* one more location for null terminated */
     char* args[num_tokens + 1];
-    for (int i = 0; i < num_tokens; i++) {
-      args[i] = tokens_get_token(tokens, i);
-      if (i == num_tokens - 2) {
-        if (args[i][0] == '<') {
-          // redirection
-          freopen(tokens_get_token(tokens, num_tokens - 1), "r", stdin);
-          // filter the redirection tokens
-          num_args = num_tokens - 2;
-          break;
-        }
-        if (args[i][0] == '>') {
-          freopen(tokens_get_token(tokens, num_tokens - 1), "w", stdout);
-          num_args = num_tokens - 2;
-          break;
-        }
-      }
-    }
-    // null terminated
-    args[num_args] = NULL;
-    char* program_name = tokens_get_token(tokens, 0);
-    if (program_name[0] != '/') {
-      // envrionemnt varibale is not modefiable
-      char* path = strndup(getenv("PATH"), MAX_PATH_LENGTH);
-      char* path_token;
-      char program_full_name[MAX_PATH_LENGTH];
-      char* save_ptr;
-      // split the string
-      path_token = strtok_r(path, ":", &save_ptr);
-      while (path_token) {
-        // complete the full path string
-        strncpy(program_full_name, path_token, MAX_PATH_LENGTH);
-        strncat(program_full_name, "/", 2);
-        strncat(program_full_name, program_name, MAX_NAME_LENGTH);
-        execv(program_full_name, args);
-        path_token = strtok_r(NULL, ":", &save_ptr);
-      }
-    } else {
-      execv(program_name, args);
-    }
-    printf("Program %s is not in path\n", program_name);
-    exit(-1);
+    /* handle program paramters */
+    get_program_args(tokens, program_index, args);
+    handle_redirect_symbol(args);
+    exec_program_in_path(args);
   }
   /* main process */
   else {
-    waitpid(id, NULL, 0);
+    // wait all child processes
+    for (int i = 0; i < num_pipes + 1; i++) {
+      wait(NULL);
+    }
   }
 }
 
