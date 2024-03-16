@@ -19,7 +19,6 @@
 /* max path length */
 #define MAX_PATH_LENGTH 4096
 #define MAX_NAME_LENGTH 256
-#define MAX_BACK_PROCESS 64
 
 /* Whether the shell is connected to an actual terminal or not. */
 bool shell_is_interactive;
@@ -39,6 +38,9 @@ int cmd_pwd(struct tokens* tokens);
 int cmd_cd(struct tokens* tokens);
 int cmd_wait(struct tokens* tokens);
 
+/* handler child exit signal */
+void sigchild_handler(int sig);
+
 /* Built-in command functions take token array (see parse.h) and return int */
 typedef int cmd_fun_t(struct tokens* tokens);
 
@@ -56,9 +58,6 @@ fun_desc_t cmd_table[] = {
     {cmd_cd, "cd", "change the current direcotry to another directory"},
     {cmd_wait, "wait", "wait for the processes to end"},
 };
-
-pid_t wait_process[MAX_BACK_PROCESS];
-int wait_num = 0;
 
 typedef struct fd_pair {
   int fd[2];
@@ -79,6 +78,7 @@ int create_pipe_process(pid_t pids[], int n_pipes, bool is_background) {
   int index = -1;
   /* tcsetpgrp will stop by SIGTTOU, so it must ignore this signal */
   signal(SIGTTOU, SIG_IGN);
+  signal(SIGCHLD, sigchild_handler);
   for (int i = 0; i < n_processes; i++) {
     pid_t id = fork();
     if (id == 0) {
@@ -92,6 +92,7 @@ int create_pipe_process(pid_t pids[], int n_pipes, bool is_background) {
         };
       }
       signal(SIGTTOU, SIG_DFL);
+      signal(SIGCHLD, SIG_DFL);
       index = i;
       break;
     } else {
@@ -148,10 +149,8 @@ int cmd_cd(struct tokens* tokens) {
 }
 
 int cmd_wait(struct tokens* tokens) {
-  for (int i = 0; i < wait_num; i++) {
-    waitpid(wait_process[i], NULL, 0);
-  }
-  wait_num = 0;
+  while (waitpid(-1, NULL, 0) > 0)
+    ;
   return 1;
 };
 
@@ -191,6 +190,12 @@ void init_shell() {
 
 bool check_if_background(struct tokens* tokens) {
   return tokens_get_token(tokens, tokens_get_length(tokens) - 1)[0] == '&';
+}
+
+/* handle child process */
+void sigchild_handler(int sig) {
+  while (waitpid(-1, NULL, WNOHANG) > 0)
+    ;
 }
 
 void get_program_args(struct tokens* tokens, int program_index, char* args[], bool is_background) {
@@ -296,12 +301,7 @@ void exec_program(struct tokens* tokens) {
   /* main process */
   else {
     // wait all child processes
-    if (is_background) {
-      for (int i = 0; i < num_process; i++) {
-        wait_process[wait_num] = pids[i];
-        wait_num++;
-      }
-    } else {
+    if (!is_background) {
       for (int i = 0; i < num_process; i++) {
         waitpid(pids[i], NULL, 0);
       }
