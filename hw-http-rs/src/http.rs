@@ -78,6 +78,46 @@ where
     Ok(())
 }
 
+pub async fn write_content_info<T>(
+    a: &mut T,
+    content_type: &str,
+    content_length: &str,
+) -> Result<()>
+where
+    T: AsyncWriteExt + Unpin,
+{
+    send_header(a, "Content-Type", content_type).await?;
+    send_header(a, "Content-Length", content_length).await?;
+    Ok(())
+}
+
+// write str
+pub async fn write_str<T>(a: &mut T, info: &str) -> Result<()>
+where
+    T: AsyncWriteExt + Unpin,
+{
+    a.write_all(info.as_bytes()).await?;
+    Ok(())
+}
+
+// write file stream to tcp stream
+pub async fn write_file<T, B>(a: &mut T, file: &mut B) -> Result<()>
+where
+    T: AsyncWriteExt + Unpin,
+    B: AsyncReadExt + Unpin,
+{
+    let mut buf = [0; REQUEST_BUF_SIZE];
+    loop {
+        let read_size = file.read(&mut buf[..]).await?;
+        a.write_all(&buf[..]).await?;
+        if read_size == 0 {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn send_header<T>(a: &mut T, key: &str, value: &str) -> Result<()>
 where
     T: AsyncWriteExt + Unpin,
@@ -91,11 +131,26 @@ pub async fn end_headers<T>(s: &mut T) -> Result<()>
 where
     T: AsyncWriteExt + Unpin,
 {
-    todo!("TODO: Part 1")
+    let msg = "\r\n";
+    s.write_all((&msg).as_bytes()).await?;
+    Ok(())
 }
 
 pub fn get_mime_type(path: &str) -> &'static str {
-    todo!("TODO: Part 1")
+    let file_extension = file_extension(path);
+    if let Some(extension) = file_extension {
+        match extension {
+            "html" | "htm" => "text/html",
+            "jpg" | "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "css" => "text/css",
+            "js" => "application/javascript",
+            "pdf" => "application/pdf",
+            _ => "text/plain",
+        }
+    } else {
+        ""
+    }
 }
 
 fn file_extension(path: &str) -> Option<&str> {
