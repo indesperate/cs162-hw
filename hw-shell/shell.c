@@ -76,22 +76,20 @@ int create_pipe_process(pid_t pids[], int n_pipes, bool is_background) {
   }
   /* fork n processes and get index */
   int index = -1;
-  /* tcsetpgrp will stop by SIGTTOU, so it must ignore this signal */
-  signal(SIGTTOU, SIG_IGN);
-  signal(SIGCHLD, sigchild_handler);
   for (int i = 0; i < n_processes; i++) {
     pid_t id = fork();
     if (id == 0) {
-      if (setpgrp() == -1) {
-        printf("set process group id failed\n");
-        exit(-1);
+      if (i == 0) {
+        if (setpgid(getpid(), getpid()) == -1) {
+          printf("set process group id failed\n");
+          exit(-1);
+        }
+      } else {
+        if (setpgid(getpid(), pids[0]) == -1) {
+          printf("set process group id failed\n");
+          exit(-1);
+        }
       }
-      if (!is_background) {
-        if (tcsetpgrp(0, getpgrp()) == -1) {
-          printf("set foreground terminal group id failed\n");
-        };
-      }
-      signal(SIGTTOU, SIG_DFL);
       signal(SIGCHLD, SIG_DFL);
       index = i;
       break;
@@ -169,6 +167,9 @@ void init_shell() {
 
   /* Check if we are running interactively */
   shell_is_interactive = isatty(shell_terminal);
+
+  /* automatic */
+  signal(SIGCHLD, sigchild_handler);
 
   if (shell_is_interactive) {
     /* If the shell is not currently in the foreground, we must pause the shell until it becomes a
