@@ -105,7 +105,4 @@ bool isdir(int fd) { return syscall1(SYS_ISDIR, fd); }
 
 int inumber(int fd) { return syscall1(SYS_INUMBER, fd); }
 
-void* sbrk(intptr_t increment) {
-  /* Homework 4: YOUR CODE HERE */
-  return NULL;
-}
+void* sbrk(intptr_t increment) { return (void*)syscall1(SYS_SBRK, increment); }

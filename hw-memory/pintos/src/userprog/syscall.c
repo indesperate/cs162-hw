@@ -7,6 +7,8 @@
 #include "threads/vaddr.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "threads/palloc.h"
+#include "userprog/pagedir.h"
 
 static void syscall_handler(struct intr_frame*);
 
@@ -76,6 +78,73 @@ static void syscall_close(int fd) {
   }
 }
 
+/* uaddr must be paged aligned */
+static bool alloc_page_in_user(void* uaddr) {
+  void* page = palloc_get_page(PAL_USER | PAL_ZERO);
+  if (page == NULL) {
+    return false;
+  }
+  if (!pagedir_set_page(thread_current()->pagedir, uaddr, page, true)) {
+    palloc_free_page(page);
+    return false;
+  }
+  return true;
+}
+
+/* uaddr must be paged aligned */
+static void free_page_in_user(void* uaddr) {
+  palloc_free_page(pagedir_get_page(thread_current()->pagedir, uaddr));
+  pagedir_clear_page(thread_current()->pagedir, uaddr);
+}
+
+static bool alloc_pages_in_heap(intptr_t increment) {
+  struct thread* t = thread_current();
+  uint8_t* heap_end_new = t->heap_end + increment;
+  size_t alloc_page_num = (pg_round_up(heap_end_new) - pg_round_up(t->heap_end)) / PGSIZE;
+  uint8_t* heap_alloc_begin = pg_round_up(t->heap_end);
+  size_t alloced_pages = 0;
+  bool success = true;
+  for (size_t i = 0; i < alloc_page_num; i++) {
+    success = alloc_page_in_user(heap_alloc_begin + i * PGSIZE);
+    if (!success) {
+      break;
+    }
+    alloced_pages++;
+  }
+  if (!success) {
+    for (size_t i = 0; i < alloced_pages; i++) {
+      free_page_in_user(heap_alloc_begin + i * PGSIZE);
+    }
+    return false;
+  }
+  return true;
+}
+
+/* increment is less than zero */
+static void free_pages_in_heap(intptr_t increment) {
+  struct thread* t = thread_current();
+  uint8_t* heap_end_new = t->heap_end + increment;
+  size_t free_pages = (pg_round_up(t->heap_end) - pg_round_up(heap_end_new)) / PGSIZE;
+  uint8_t* heap_free_begin = pg_round_up(heap_end_new);
+  for (size_t i = 0; i < free_pages; i++) {
+    free_page_in_user(heap_free_begin + i * PGSIZE);
+  }
+}
+
+static void* syscall_sbrk(intptr_t increment) {
+  struct thread* t = thread_current();
+  if (increment > 0) {
+    if (!alloc_pages_in_heap(increment))
+      return (void*)-1;
+  }
+  if (increment < 0) {
+    free_pages_in_heap(increment);
+  }
+  uint8_t* old_heap_end = t->heap_end;
+  t->heap_end += increment;
+  return old_heap_end;
+}
+
 static void syscall_handler(struct intr_frame* f) {
   uint32_t* args = (uint32_t*)f->esp;
   struct thread* t = thread_current();
@@ -109,6 +178,11 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_CLOSE:
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
       syscall_close((int)args[1]);
+      break;
+
+    case SYS_SBRK:
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
+      f->eax = (uint32_t)syscall_sbrk((intptr_t)args[1]);
       break;
 
     default:
