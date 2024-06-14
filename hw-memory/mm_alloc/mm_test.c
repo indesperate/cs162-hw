@@ -32,10 +32,18 @@ static void load_alloc_functions() {
 
 int main() {
   load_alloc_functions();
-
-  int* data = mm_malloc(sizeof(int));
-  assert(data != NULL);
-  data[0] = 0x162;
-  mm_free(data);
+  static const int num = 100;
+  int* arr[num];
+  for (int i = 0; i < num; i++) {
+    arr[i] = mm_malloc(sizeof(int));
+    arr[i][0] = 0x162;
+    arr[i] = mm_realloc(arr[i], sizeof(int) * 10);
+    arr[i][0] = 0x162;
+    arr[i][9] = 0x162;
+  }
+  printf("allocated %d ints\n", num);
+  for (int i = num - 1; i > 0; i--) {
+    mm_free(arr[i]);
+  }
   puts("malloc test successful!");
 }
