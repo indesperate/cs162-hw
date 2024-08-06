@@ -1,22 +1,39 @@
 //! The MapReduce coordinator.
 //!
 
+use std::sync::Arc;
+
 use anyhow::Result;
+use tokio::sync::Mutex;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 use crate::rpc::coordinator::*;
-use crate::*;
+use crate::{WorkerId, COORDINATOR_ADDR, INITIAL_WORKER_ID};
 
 pub mod args;
 
+pub struct CoordinatorState {
+    worker_id: WorkerId,
+}
+
 pub struct Coordinator {
-    // TODO: add your own fields
+    inner: Arc<Mutex<CoordinatorState>>, // TODO: add your own fields
 }
 
 impl Coordinator {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            inner: Arc::new(Mutex::new(CoordinatorState {
+                worker_id: INITIAL_WORKER_ID,
+            })),
+        }
+    }
+}
+
+impl Default for Coordinator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -61,8 +78,11 @@ impl coordinator_server::Coordinator for Coordinator {
         &self,
         _req: Request<RegisterRequest>,
     ) -> Result<Response<RegisterReply>, Status> {
-        // TODO: Worker registration
-        Ok(Response::new(RegisterReply { worker_id: 0 }))
+        let mut inner = self.inner.lock().await;
+        let worker_id = inner.worker_id;
+        inner.worker_id += 1;
+        log::info!("Worker register with {}", worker_id);
+        Ok(Response::new(RegisterReply { worker_id }))
     }
 
     async fn get_task(
@@ -105,7 +125,7 @@ impl coordinator_server::Coordinator for Coordinator {
 pub async fn start(_args: args::Args) -> Result<()> {
     let addr = COORDINATOR_ADDR.parse().unwrap();
 
-    let coordinator = Coordinator {};
+    let coordinator = Coordinator::new();
     let svc = coordinator_server::CoordinatorServer::new(coordinator);
     Server::builder().add_service(svc).serve(addr).await?;
 
