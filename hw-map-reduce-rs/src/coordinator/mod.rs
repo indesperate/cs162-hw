@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
@@ -13,8 +14,16 @@ use crate::{WorkerId, COORDINATOR_ADDR, INITIAL_WORKER_ID};
 
 pub mod args;
 
+/// a type for Coordinator state
 pub struct CoordinatorState {
+    free_worker_id: WorkerId,
+    workers: Vec<WorkerState>,
+}
+
+/// a type for track worker state
+pub struct WorkerState {
     worker_id: WorkerId,
+    last_alive_time: Instant,
 }
 
 pub struct Coordinator {
@@ -25,7 +34,8 @@ impl Coordinator {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(CoordinatorState {
-                worker_id: INITIAL_WORKER_ID,
+                free_worker_id: INITIAL_WORKER_ID,
+                workers: Vec::new(),
             })),
         }
     }
@@ -70,7 +80,14 @@ impl coordinator_server::Coordinator for Coordinator {
         &self,
         req: Request<HeartbeatRequest>,
     ) -> Result<Response<HeartbeatReply>, Status> {
-        // TODO: Worker registration
+        let mut inner = self.inner.lock().await;
+        let worker_id = req.into_inner().worker_id;
+        for worker in inner.workers.iter_mut() {
+            if worker.worker_id == worker_id {
+                worker.last_alive_time = Instant::now();
+            }
+        }
+        log::info!("Accept worker {} heartbeat", worker_id);
         Ok(Response::new(HeartbeatReply {}))
     }
 
@@ -79,8 +96,12 @@ impl coordinator_server::Coordinator for Coordinator {
         _req: Request<RegisterRequest>,
     ) -> Result<Response<RegisterReply>, Status> {
         let mut inner = self.inner.lock().await;
-        let worker_id = inner.worker_id;
-        inner.worker_id += 1;
+        let worker_id = inner.free_worker_id;
+        inner.free_worker_id += 1;
+        inner.workers.push(WorkerState {
+            worker_id,
+            last_alive_time: Instant::now(),
+        });
         log::info!("Worker register with {}", worker_id);
         Ok(Response::new(RegisterReply { worker_id }))
     }
