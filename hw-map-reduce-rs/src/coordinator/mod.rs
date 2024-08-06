@@ -1,16 +1,20 @@
 //! The MapReduce coordinator.
 //!
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use anyhow::Result;
+use bytes::Bytes;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tonic::transport::Server;
+use tonic::Code;
 use tonic::{Request, Response, Status};
 
+use crate::app::named;
 use crate::rpc::coordinator::*;
-use crate::{WorkerId, COORDINATOR_ADDR, INITIAL_WORKER_ID};
+use crate::{JobId, WorkerId, COORDINATOR_ADDR, INITIAL_JOB_ID, INITIAL_WORKER_ID};
 
 pub mod args;
 
@@ -18,12 +22,25 @@ pub mod args;
 pub struct CoordinatorState {
     free_worker_id: WorkerId,
     workers: Vec<WorkerState>,
+    free_job_id: JobId,
+    jobs: HashMap<JobId, JobState>,
+    job_queue: VecDeque<JobId>,
 }
 
 /// a type for track worker state
 pub struct WorkerState {
     worker_id: WorkerId,
     last_alive_time: Instant,
+}
+
+pub struct JobState {
+    files: Vec<String>,
+    output_dir: String,
+    app: String,
+    n_reduce: u32,
+    args: Bytes,
+    done: bool,
+    failed: bool,
 }
 
 pub struct Coordinator {
@@ -36,6 +53,9 @@ impl Coordinator {
             inner: Arc::new(Mutex::new(CoordinatorState {
                 free_worker_id: INITIAL_WORKER_ID,
                 workers: Vec::new(),
+                free_job_id: INITIAL_JOB_ID,
+                jobs: HashMap::new(),
+                job_queue: VecDeque::new(),
             })),
         }
     }
@@ -66,14 +86,49 @@ impl coordinator_server::Coordinator for Coordinator {
         &self,
         req: Request<SubmitJobRequest>,
     ) -> Result<Response<SubmitJobReply>, Status> {
-        todo!("Job submission")
+        let mut inner = self.inner.lock().await;
+        let job_id = inner.free_job_id;
+        inner.free_job_id += 1;
+        // read jobrequest
+        let job = req.into_inner();
+        named(&job.app).map_err(|e| Status::new(Code::InvalidArgument, e.to_string()))?;
+        // add to queue and map
+        inner.jobs.insert(
+            job_id,
+            JobState {
+                files: job.files,
+                output_dir: job.output_dir,
+                app: job.app,
+                n_reduce: job.n_reduce,
+                args: job.args.into(),
+                done: false,
+                failed: false,
+            },
+        );
+        inner.job_queue.push_back(job_id);
+
+        log::info!("Receive job {}", job_id);
+
+        Ok(Response::new(SubmitJobReply { job_id }))
     }
 
     async fn poll_job(
         &self,
         req: Request<PollJobRequest>,
     ) -> Result<Response<PollJobReply>, Status> {
-        todo!("Job submission")
+        let inner = self.inner.lock().await;
+        let job_id = req.into_inner().job_id;
+        log::info!("Poll job {}", job_id);
+        let job_state = match inner.jobs.get(&job_id) {
+            Some(s) => s,
+            None => return Err(Status::new(Code::NotFound, "job id is invalid")),
+        };
+
+        Ok(Response::new(PollJobReply {
+            done: job_state.done,
+            failed: job_state.failed,
+            errors: Vec::new(),
+        }))
     }
 
     async fn heartbeat(
