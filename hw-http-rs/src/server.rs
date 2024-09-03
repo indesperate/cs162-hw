@@ -78,7 +78,7 @@ async fn handle_get_request(socket: &mut TcpStream, request: &Request) -> Result
                 send_file(socket, &path_str).await?;
             } else {
                 let parent = path_buf.parent().unwrap();
-                send_files_info(socket, &parent).await?;
+                send_files_info(socket, parent).await?;
             }
         } else {
             let path_str = path_buf.into_os_string().into_string().unwrap();
